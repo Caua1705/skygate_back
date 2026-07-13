@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkyGate — Editor de mapa</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><h1>SkyGate · Editor de grafo</h1><div id="floors" class="toolbar"></div><button id="zoomOut">−</button><button id="zoomIn">+</button><button id="fit">Enquadrar</button></header>
+  <main>
+    <section id="mapWrap"><div id="map" aria-label="Mapa do aeroporto"></div><p class="hint">Clique no mapa para criar um nó. Arraste para mover; use a roda do mouse para zoom.</p></section>
+    <aside>
+      <div class="tabs"><button data-tab="node" class="active">Nó</button><button data-tab="edge">Aresta</button><button data-tab="route">Rotas</button><button data-tab="data">Dados</button></div>
+      <section id="node" class="panel active"><h2>Nó</h2><form id="nodeForm">
+        <label>Código<input name="code" required></label><label>Nome<input name="name" required></label>
+        <label>Tipo<input name="type" value="waypoint" required></label><label>Piso<select name="floor"><option>0</option><option>1</option><option>2</option><option>3</option></select></label>
+        <label>Zona<select name="zone"><option>public</option><option>checkin</option><option>security</option><option>domestic_airside</option><option>international_airside</option><option>connection</option><option>baggage_claim</option><option>restricted</option></select></label>
+        <label>Grupo conector<input name="connector_group" placeholder="ex.: elevador-a"></label><label><input type="checkbox" name="is_accessible" checked> Acessível</label><label><input type="checkbox" name="is_restricted"> Restrito</label>
+        <p id="coordinates">Clique no mapa para definir coordenadas.</p><button>Salvar nó</button><button type="button" id="deleteNode" class="danger">Excluir nó</button>
+      </form></section>
+      <section id="edge" class="panel"><h2>Aresta</h2><form id="edgeForm"><label>Origem<select name="from_code" required></select></label><label>Destino<select name="to_code" required></select></label>
+        <label>Tipo<select name="edge_type"><option>corridor</option><option>ramp</option><option>stairs</option><option>escalator</option><option>elevator</option><option>security</option><option>boarding</option><option>restricted_transition</option></select></label>
+        <label>Distância (m)<input name="distance_meters" type="number" min="0" step="0.1"></label><label>Tempo (segundos)<input name="walk_time_seconds" type="number" min="0" step="1" required value="0"></label><label>Instrução<input name="instruction"></label>
+        <label><input type="checkbox" name="is_bidirectional" checked> Bidirecional</label><label><input type="checkbox" name="is_accessible" checked> Acessível</label><label><input type="checkbox" name="is_estimated" checked> Estimado</label><button>Salvar aresta</button><button type="button" id="deleteEdge" class="danger">Excluir aresta</button></form>
+        <p class="hint">Arestas entre pisos são permitidas apenas para elevador, escada ou escada rolante.</p></section>
+      <section id="route" class="panel"><h2>Teste de rota</h2><label>Origem<select id="routeFrom"></select></label><label>Destino<select id="routeTo"></select></label><button id="normalRoute">Rota normal</button><button id="accessibleRoute">Rota acessível</button><pre id="routeResult"></pre></section>
+      <section id="data" class="panel"><h2>Dados</h2><button id="validate">Validar grafo</button><pre id="validation"></pre><button id="export">Exportar JSON</button><label class="file">Importar JSON<input id="import" type="file" accept="application/json"></label><button id="clear" class="danger">Limpar armazenamento local</button><p class="hint">Estado salvo automaticamente no localStorage. O SVG é somente referência visual.</p></section>
+    </aside>
+  </main><script src="app.js"></script>
+</body>
+</html>
