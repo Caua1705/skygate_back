@@ -141,6 +141,24 @@ python -m http.server 8001
 
 O editor salva rascunhos no `localStorage`, desenha nós e arestas, valida o grafo e testa Dijkstra normal ou acessível. Ao clicar no mapa, salva as coordenadas reais do `viewBox`. O download se chama `graph_v1.json`; mova/substitua esse arquivo em `data/airports/fortaleza/graph_v1.json` antes da importação. O arquivo já nesse caminho é o template canônico vazio.
 
+### Regra de modelagem de nós e businesses
+
+Nós representam pontos físicos de navegação. Lojas, companhias aéreas e serviços não devem virar nós separados quando estiverem na mesma área física. Vários registros de `businesses` podem compartilhar o mesmo `node_id`; por exemplo, LATAM, Azul e GOL podem apontar para o único nó físico **Área de check-in doméstico**.
+
+### Conectar nós
+
+Ative **Conectar nós**, clique em um nó existente para definir a origem e depois em outro nó para definir o destino. O editor cria somente uma aresta bidirecional, acessível e do tipo `corridor`; nenhum nó é criado ou alterado. A distância é calculada automaticamente pelas coordenadas dos dois nós.
+
+Depois de criar a aresta, o nó de destino permanece destacado e passa a ser a origem da próxima conexão. Assim é possível conectar uma sequência inteira sem sair do modo. Ligações duplicadas são recusadas, inclusive quando os códigos aparecem no sentido inverso em uma aresta bidirecional. Para inspecionar, editar ou excluir uma ligação, saia do modo e clique na linha correspondente.
+
+Na primeira abertura desta versão, o conteúdo textual atual de `skygate:fortaleza:graph:v1` é copiado, sem conversão, para `skygate:fortaleza:graph:v1:backup:before-corridor-v2`. A cópia é idempotente e a chave original continua sendo usada, preservando importação, exportação e o formato de `graph_v1.json`.
+
+Os testes unitários do modo de conexão usam o runner nativo do Node.js:
+
+```powershell
+node --test tools/map-editor/connections.test.js
+```
+
 Para validar sem gravar no banco:
 
 ```powershell
