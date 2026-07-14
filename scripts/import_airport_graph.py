@@ -9,7 +9,7 @@ import json
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,8 @@ from src.repositories.airport_repository import AirportRepository
 ZONES = {"public", "checkin", "security", "domestic_airside", "international_airside", "connection", "baggage_claim", "restricted"}
 EDGE_TYPES = {"corridor", "ramp", "stairs", "escalator", "elevator", "security", "boarding", "restricted_transition"}
 CONNECTOR_TYPES = {"elevator", "stairs", "escalator"}
+INACCESSIBLE_CONNECTOR_TYPES = {"stairs", "escalator"}
+TWO_DECIMAL_PLACES = Decimal("0.01")
 
 
 class GraphValidationError(ValueError):
@@ -56,6 +58,25 @@ def decimal(value: Any, label: str, *, required: bool = False) -> Decimal | None
     return result
 
 
+def rounded(value: Decimal) -> Decimal:
+    return value.quantize(TWO_DECIMAL_PLACES, rounding=ROUND_HALF_UP)
+
+
+def euclidean_viewbox_distance(source: dict[str, Any], target: dict[str, Any]) -> Decimal:
+    dx = decimal(target["x"], "x", required=True) - decimal(source["x"], "x", required=True)
+    dy = decimal(target["y"], "y", required=True) - decimal(source["y"], "y", required=True)
+    return rounded((dx * dx + dy * dy).sqrt())
+
+
+def required_accessibility(source: dict[str, Any], target: dict[str, Any], edge_type: str) -> bool | None:
+    types = {source.get("type"), target.get("type"), edge_type}
+    if types & INACCESSIBLE_CONNECTOR_TYPES:
+        return False
+    if "elevator" in types:
+        return True
+    return None
+
+
 def validate_graph(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict) or set(("airport", "nodes", "edges", "businesses")) - data.keys():
         raise GraphValidationError("JSON deve conter airport, nodes, edges e businesses")
@@ -65,6 +86,12 @@ def validate_graph(data: Any) -> dict[str, Any]:
     for key in ("nodes", "edges", "businesses"):
         if not isinstance(data[key], list):
             raise GraphValidationError(f"{key} deve ser uma lista")
+    factor = decimal(data.get("estimated_seconds_per_viewbox_unit"), "estimated_seconds_per_viewbox_unit", required=True)
+    if factor == 0:
+        raise GraphValidationError("estimated_seconds_per_viewbox_unit deve ser maior que zero")
+    estimation = data.get("time_estimation")
+    if not isinstance(estimation, dict) or estimation.get("is_estimated") is not True or estimation.get("validated_on_site") is not False:
+        raise GraphValidationError("time_estimation deve informar estimativa não validada presencialmente")
     codes: set[str] = set()
     nodes: dict[str, dict[str, Any]] = {}
     for item in data["nodes"]:
@@ -84,7 +111,22 @@ def validate_graph(data: Any) -> dict[str, Any]:
         if pair in pairs: raise GraphValidationError(f"aresta duplicada: {pair[0]} -> {pair[1]}")
         if edge.get("edge_type", "corridor") not in EDGE_TYPES: raise GraphValidationError(f"aresta {pair}: edge_type inválido")
         if nodes[pair[0]]["floor"] != nodes[pair[1]]["floor"] and edge.get("edge_type") not in CONNECTOR_TYPES: raise GraphValidationError(f"aresta {pair}: troca de piso exige elevador, escada ou escada rolante")
-        decimal(edge.get("walk_time_seconds"), f"aresta {pair}.walk_time_seconds", required=True); decimal(edge.get("distance_meters"), f"aresta {pair}.distance_meters")
+        viewbox_distance = decimal(edge.get("viewbox_distance"), f"aresta {pair}.viewbox_distance", required=True)
+        expected_viewbox_distance = euclidean_viewbox_distance(nodes[pair[0]], nodes[pair[1]])
+        if viewbox_distance != expected_viewbox_distance:
+            raise GraphValidationError(f"aresta {pair}: viewbox_distance deve ser {expected_viewbox_distance}")
+        if "distance_meters" not in edge or edge["distance_meters"] is not None:
+            raise GraphValidationError(f"aresta {pair}.distance_meters deve ser null")
+        walk_time = decimal(edge.get("walk_time_seconds"), f"aresta {pair}.walk_time_seconds", required=True)
+        expected_walk_time = rounded(viewbox_distance * factor)
+        if walk_time != expected_walk_time:
+            raise GraphValidationError(f"aresta {pair}: walk_time_seconds deve ser {expected_walk_time}")
+        if edge.get("is_estimated") is not True:
+            raise GraphValidationError(f"aresta {pair}.is_estimated deve permanecer true")
+        required_accessible = required_accessibility(nodes[pair[0]], nodes[pair[1]], edge.get("edge_type", "corridor"))
+        if required_accessible is not None and edge.get("is_accessible") is not required_accessible:
+            expected = "true" if required_accessible else "false"
+            raise GraphValidationError(f"aresta {pair}.is_accessible deve ser {expected}")
         pairs.add(pair)
     for business in data["businesses"]:
         if not isinstance(business, dict) or business.get("node_code") not in nodes: raise GraphValidationError("business.node_code deve referenciar um nó")

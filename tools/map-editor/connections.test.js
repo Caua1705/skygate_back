@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createEdge, distanceBetween } = require("./connections.js");
+const { createEdge, distanceBetween, estimatedWalkTime, requiredAccessibility } = require("./connections.js");
 
 const graph = () => ({
   airport: { slug: "fortaleza" },
@@ -14,6 +14,7 @@ const graph = () => ({
 
 test("calcula a distância entre as coordenadas dos nós", () => {
   assert.equal(distanceBetween(graph().nodes[0], graph().nodes[1]), 5);
+  assert.equal(estimatedWalkTime(5, 0.25), 1.25);
 });
 
 test("cria somente uma aresta bidirecional com os padrões esperados", () => {
@@ -24,10 +25,16 @@ test("cria somente uma aresta bidirecional com os padrões esperados", () => {
   assert.deepEqual(result.graph.nodes, original.nodes);
   assert.equal(result.graph.edges.length, 1);
   assert.deepEqual(result.edge, {
-    from_code: "a", to_code: "b", edge_type: "corridor", distance_meters: 5,
-    walk_time_seconds: 5, instruction: null, is_bidirectional: true,
+    from_code: "a", to_code: "b", edge_type: "corridor", viewbox_distance: 5,
+    distance_meters: null, walk_time_seconds: 1.25, instruction: null, is_bidirectional: true,
     is_accessible: true, is_estimated: true,
   });
+});
+
+test("marca ligações de escada e escada rolante como inacessíveis e elevador como acessível", () => {
+  assert.equal(requiredAccessibility({ type: "corridor" }, { type: "stairs" }), false);
+  assert.equal(requiredAccessibility({ type: "escalator" }, { type: "corridor" }), false);
+  assert.equal(requiredAccessibility({ type: "elevator" }, { type: "corridor" }), true);
 });
 
 test("permite conexões consecutivas sem criar nós", () => {
