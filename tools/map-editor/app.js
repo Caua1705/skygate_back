@@ -7,7 +7,7 @@ const DEFAULT_SECONDS_PER_VIEWBOX_UNIT = SkyGateConnections.DEFAULT_ESTIMATED_SE
 const TIME_ESTIMATION = { method:"viewbox_distance * estimated_seconds_per_viewbox_unit", is_estimated:true, validated_on_site:false };
 const empty = () => ({ airport: { slug: "fortaleza", name: "Aeroporto de Fortaleza" }, estimated_seconds_per_viewbox_unit:DEFAULT_SECONDS_PER_VIEWBOX_UNIT, time_estimation:{...TIME_ESTIMATION}, nodes: [], edges: [], businesses: [] });
 backupAndMigrateStorage();
-let graph = load(), floor = 0, selectedNode = null, selectedEdge = null, svg, baseViewBox, drag;
+let graph = load(), floor = 0, displayedFloor = null, floorRequest = 0, selectedNode = null, selectedEdge = null, svg, baseViewBox, drag;
 let lastMapClick = null, suppressMapClickUntil = 0;
 let connectMode = false, connectOriginCode = null, connectionMessage = "";
 const $ = selector => document.querySelector(selector);
@@ -34,16 +34,44 @@ function uid() { return crypto.randomUUID ? crypto.randomUUID() : `n-${Date.now(
 function checked(form, name) { return form.elements[name].checked; }
 function setTabs() { document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { document.querySelectorAll("[data-tab],.panel").forEach(x => x.classList.remove("active")); b.classList.add("active"); $(`#${b.dataset.tab}`).classList.add("active"); }); }
 
+function renderFloorButtons() {
+  $("#floors").replaceChildren(...[0,1,2,3].map(n => {
+    const b=document.createElement("button");
+    b.type="button"; b.textContent=`Piso ${n}`; b.className=n===floor?"active":"";
+    b.setAttribute("aria-pressed", String(n===floor)); b.onclick=()=>showFloor(n); return b;
+  }));
+}
+function setFloorStatus(message="", isError=false) { const status=$("#floorStatus"); status.textContent=message; status.classList.toggle("error",isError); }
 async function showFloor(next) {
-  if (Number(next) !== floor) { connectOriginCode = null; connectionMessage = connectMode ? "Selecione o nó de origem." : ""; }
-  floor = Number(next); selectedNode = selectedEdge = null;
-  const text = await fetch(MAPS[floor]).then(r => r.text());
-  const doc = new DOMParser().parseFromString(text, "image/svg+xml");
-  svg = document.importNode(doc.documentElement, true); svg.removeAttribute("width"); svg.removeAttribute("height");
-  if (!svg.viewBox.baseVal.width) svg.setAttribute("viewBox", "0 0 1000 1000");
-  baseViewBox = { ...svg.viewBox.baseVal };
-  svg.insertAdjacentHTML("beforeend", '<defs><marker id="sgArrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z"/></marker></defs><g id="sgEdges"></g><g id="sgNodes"></g>');
-  $("#map").replaceChildren(svg); bindMap(); render();
+  const requestedFloor=Number(next);
+  if (!Number.isInteger(requestedFloor) || !(requestedFloor in MAPS)) return;
+  const requestId=++floorRequest;
+  if (requestedFloor !== floor) { connectOriginCode = null; connectionMessage = connectMode ? "Selecione o nó de origem." : ""; }
+  floor=requestedFloor; selectedNode=selectedEdge=null;
+  renderFloorButtons(); setFloorStatus(`Carregando piso ${floor}…`);
+  try {
+    const response=await fetch(MAPS[requestedFloor]);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const text=await response.text();
+    const doc=new DOMParser().parseFromString(text,"image/svg+xml");
+    if (doc.querySelector("parsererror") || doc.documentElement.localName!=="svg") throw new Error("SVG inválido");
+    const nextSvg=document.importNode(doc.documentElement,true);
+    nextSvg.removeAttribute("width"); nextSvg.removeAttribute("height");
+    if (!nextSvg.viewBox.baseVal.width) nextSvg.setAttribute("viewBox","0 0 1000 1000");
+    if (requestId!==floorRequest) return;
+    svg=nextSvg;
+    const viewBox=svg.viewBox.baseVal;
+    baseViewBox={x:viewBox.x,y:viewBox.y,width:viewBox.width,height:viewBox.height};
+    svg.insertAdjacentHTML("beforeend", '<defs><marker id="sgArrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z"/></marker></defs><g id="sgEdges"></g><g id="sgNodes"></g>');
+    displayedFloor=requestedFloor;
+    $("#map").replaceChildren(svg); bindMap(); setFloorStatus(); render();
+  } catch (error) {
+    if (requestId!==floorRequest) return;
+    floor=displayedFloor??requestedFloor;
+    renderFloorButtons();
+    setFloorStatus(`Falha no piso ${requestedFloor}`,true);
+    console.error(`Não foi possível carregar o piso ${requestedFloor}:`,error);
+  }
 }
 function bindMap() {
   lastMapClick = null; suppressMapClickUntil = 0;
@@ -73,7 +101,8 @@ function round(n) { return Math.round(n * 100) / 100; }
 function zoom(factor, center) { const b=svg.viewBox.baseVal; b.x=center.x-(center.x-b.x)*factor; b.y=center.y-(center.y-b.y)*factor; b.width*=factor; b.height*=factor; }
 function fit() { const b=svg.viewBox.baseVal; Object.assign(b, { x:baseViewBox.x, y:baseViewBox.y, width:baseViewBox.width, height:baseViewBox.height }); }
 function render() {
-  if (!svg) return; $("#floors").replaceChildren(...[0,1,2,3].map(n => { const b=document.createElement("button"); b.textContent=`Piso ${n}`; b.className=n===floor?"active":""; b.onclick=()=>showFloor(n); return b; }));
+  renderFloorButtons();
+  if (!svg) return;
   $("#secondsPerUnit").value=graph.estimated_seconds_per_viewbox_unit;
   const nodes = graph.nodes.filter(n => String(n.floor) === String(floor)), byCode=Object.fromEntries(graph.nodes.map(n=>[n.code,n]));
   const edges = $("#sgEdges"); edges.replaceChildren(); graph.edges.forEach((e, i) => { const a=byCode[e.from_code], b=byCode[e.to_code]; if (!a || !b || (String(a.floor)!==String(floor) && String(b.floor)!==String(floor))) return; const line=document.createElementNS(svg.namespaceURI,"line"); line.setAttribute("x1",a.x);line.setAttribute("y1",a.y);line.setAttribute("x2",b.x);line.setAttribute("y2",b.y);line.classList.add("edge"); if (selectedEdge===i) line.classList.add("selected"); if (!e.is_bidirectional) line.setAttribute("marker-end","url(#sgArrow)"); line.onclick=()=>{if(connectMode)return;selectedEdge=i;selectedNode=null;fillEdge();render();}; edges.append(line); });

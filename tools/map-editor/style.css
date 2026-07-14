@@ -6,6 +6,8 @@ button, .file { border: 1px solid #bfd0df; border-radius: 4px; background: white
 button:disabled { cursor: not-allowed; opacity: .5; }
 .toolbar { display: flex; gap: 4px; flex: 1; }
 .toolbar button.active, .tabs button.active { background: #1f77b4; color: white; }
+#floorStatus { min-width: 92px; font-size: 12px; text-align: right; color: #d9e2ec; }
+#floorStatus.error { color: #ffd2d2; }
 main { display: grid; grid-template-columns: minmax(0, 1fr) 330px; height: calc(100vh - 58px); }
 #mapWrap { min-width: 0; position: relative; overflow: hidden; background: #dbe5ec; }
 #map { width: 100%; height: 100%; cursor: crosshair; }
