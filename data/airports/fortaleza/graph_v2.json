@@ -991,6 +991,32 @@
       "is_accessible": true,
       "is_restricted": false,
       "connector_group": null
+    },
+    {
+      "id": "daa035d1-9243-4c50-819c-cf3c81ad561b",
+      "code": "p1_transicao_nucleo_esquerdo",
+      "name": "Transição Núcleo Esquerdo",
+      "type": "waypoint",
+      "floor": "1",
+      "x": 632.35,
+      "y": 585.14,
+      "zone": "public",
+      "is_accessible": true,
+      "is_restricted": false,
+      "connector_group": null
+    },
+    {
+      "id": "8dabbfe1-ed93-4771-9caa-df39050752e4",
+      "code": "redsd",
+      "name": "fds",
+      "type": "waypoint",
+      "floor": "1",
+      "x": 1040.25,
+      "y": 661.07,
+      "zone": "public",
+      "is_accessible": true,
+      "is_restricted": false,
+      "connector_group": null
     }
   ],
   "edges": [
