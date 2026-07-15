@@ -12,7 +12,8 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 330px; height: calc(
 #mapWrap { min-width: 0; position: relative; overflow: hidden; background: #dbe5ec; }
 #map { width: 100%; height: 100%; cursor: crosshair; }
 #map svg { width: 100%; height: 100%; display: block; }
-#map svg.panning { cursor: grabbing; user-select: none; }
+#mapWrap.pan-ready #map, #mapWrap.pan-ready #map * { cursor: grab; }
+#map svg.panning, #map svg.panning * { cursor: grabbing; user-select: none; }
 #connectToolbar { position: absolute; z-index: 2; top: 12px; left: 12px; display: flex; align-items: center; gap: 8px; padding: 7px; border-radius: 5px; background: #fffffff2; box-shadow: 0 2px 8px #102a4333; }
 #connectStatus { color: #334e68; }
 #mapWrap.connecting #map { cursor: pointer; }

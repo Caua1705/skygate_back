@@ -2,6 +2,7 @@
 const MAPS = Object.fromEntries([0, 1, 2, 3].map(n => [n, `../../data/airports/fortaleza/maps/fortaleza_piso_${n}.svg`]));
 const STORAGE = "skygate:fortaleza:graph:v1";
 const STORAGE_BACKUP = "skygate:fortaleza:graph:v1:backup:before-corridor-v2";
+const ORPHAN_CLEANUP_BACKUP = "skygate:fortaleza:graph:v1:backup:before-orphan-cleanup";
 const STORAGE_VERSION = "skygate:fortaleza:map-editor:schema-version";
 const DEFAULT_SECONDS_PER_VIEWBOX_UNIT = SkyGateConnections.DEFAULT_ESTIMATED_SECONDS_PER_VIEWBOX_UNIT;
 const TIME_ESTIMATION = { method:"viewbox_distance * estimated_seconds_per_viewbox_unit", is_estimated:true, validated_on_site:false };
@@ -28,7 +29,21 @@ function normalizeGraph(value) {
   next.businesses = Array.isArray(next.businesses) ? next.businesses : [];
   return next;
 }
-function load() { try { return normalizeGraph(JSON.parse(localStorage.getItem(STORAGE)) || empty()); } catch { return empty(); } }
+function load() {
+  let normalized;
+  try { normalized=normalizeGraph(JSON.parse(localStorage.getItem(STORAGE))||empty()); }
+  catch { return empty(); }
+  const cleanup=SkyGateGraphState.removeOrphanEdges(normalized);
+  if (!cleanup.removedCount) return normalized;
+  try {
+    SkyGateGraphState.backupStoredGraph(localStorage,STORAGE,ORPHAN_CLEANUP_BACKUP,normalized);
+    localStorage.setItem(STORAGE,JSON.stringify(cleanup.graph));
+    return cleanup.graph;
+  } catch (error) {
+    console.error("A limpeza automática de arestas órfãs não foi aplicada:",error);
+    return normalized;
+  }
+}
 function save() { graph=normalizeGraph(graph); localStorage.setItem(STORAGE, JSON.stringify(graph)); render(); }
 function uid() { return crypto.randomUUID ? crypto.randomUUID() : `n-${Date.now()}-${Math.random()}`; }
 function checked(form, name) { return form.elements[name].checked; }
@@ -82,10 +97,11 @@ function bindMap() {
   svg.addEventListener("click", event => { if (event.target.closest(".node,.edge") || connectMode) return; const p = point(event); selectedNode = { id: uid(), code:"", name:"", type:"waypoint", floor:String(floor), x:round(p.x), y:round(p.y), zone:"public", is_accessible:true, is_restricted:false }; selectedEdge = null; fillNode(); render(); });
   svg.addEventListener("wheel", event => { event.preventDefault(); zoom(event.deltaY > 0 ? 1.15 : .87, point(event)); }, { passive:false });
   svg.addEventListener("pointerdown", e => {
-    if (e.button !== 0 || !lastMapClick) return;
-    const elapsed = performance.now() - lastMapClick.time;
-    const distance = Math.hypot(e.clientX-lastMapClick.x, e.clientY-lastMapClick.y);
-    if (elapsed > 500 || distance > 16) return;
+    if (e.button !== 0) return;
+    const elapsed = lastMapClick ? performance.now() - lastMapClick.time : Infinity;
+    const distance = lastMapClick ? Math.hypot(e.clientX-lastMapClick.x, e.clientY-lastMapClick.y) : Infinity;
+    const doubleClickAndHold = elapsed <= 500 && distance <= 16;
+    if (!e.ctrlKey && !doubleClickAndHold) return;
     drag = { x:e.clientX, y:e.clientY, box:{...svg.viewBox.baseVal}, pointerId:e.pointerId };
     suppressMapClickUntil = Infinity; lastMapClick = null;
     if (selectedNode && !graph.nodes.some(node => node.id === selectedNode.id)) { selectedNode = null; fillNode(); render(); }
@@ -96,6 +112,9 @@ function bindMap() {
   svg.addEventListener("pointerup", stopPan);
   svg.addEventListener("pointercancel", stopPan);
 }
+document.addEventListener("keydown",e=>{if(e.key==="Control")$("#mapWrap").classList.add("pan-ready");});
+document.addEventListener("keyup",e=>{if(e.key==="Control")$("#mapWrap").classList.remove("pan-ready");});
+window.addEventListener("blur",()=>$("#mapWrap").classList.remove("pan-ready"));
 function point(e) { const p=svg.createSVGPoint(); p.x=e.clientX; p.y=e.clientY; return p.matrixTransform(svg.getScreenCTM().inverse()); }
 function round(n) { return Math.round(n * 100) / 100; }
 function zoom(factor, center) { const b=svg.viewBox.baseVal; b.x=center.x-(center.x-b.x)*factor; b.y=center.y-(center.y-b.y)*factor; b.width*=factor; b.height*=factor; }
@@ -120,8 +139,8 @@ function fillEdge() { const f=$("#edgeForm"); if(selectedEdge==null) { f.reset()
 function validate(g=graph) { const errors=[], codes=new Set(), nodes=Object.fromEntries(g.nodes.map(n=>[n.code,n])), pairs=new Set(), linked=new Set(),factor=Number(g.estimated_seconds_per_viewbox_unit);if(!Number.isFinite(factor)||factor<=0)errors.push("Fator de tempo estimado inválido.");if(g.time_estimation?.is_estimated!==true||g.time_estimation?.validated_on_site!==false)errors.push("Metadados da estimativa de tempo inválidos."); for(const n of g.nodes){ if(!n.code||codes.has(n.code)) errors.push(`Código duplicado ou vazio: ${n.code||"(vazio)"}`); codes.add(n.code); if(!Number.isFinite(n.x)||!Number.isFinite(n.y)) errors.push(`Coordenadas inválidas: ${n.code}`); } for(const e of g.edges){ const key=`${e.from_code}>${e.to_code}`; if(pairs.has(key)) errors.push(`Aresta duplicada: ${key}`); pairs.add(key); const a=nodes[e.from_code],b=nodes[e.to_code]; if(!a||!b) errors.push(`Aresta aponta para nó inexistente: ${key}`); else { linked.add(a.code);linked.add(b.code); if(a.floor!==b.floor && !["elevator","stairs","escalator"].includes(e.edge_type)) errors.push(`Mudança de piso inválida: ${key}`); const expectedDistance=SkyGateConnections.distanceBetween(a,b),expectedTime=SkyGateConnections.estimatedWalkTime(expectedDistance,factor),required=SkyGateConnections.requiredAccessibility(a,b,e.edge_type);if(e.viewbox_distance!==expectedDistance||e.walk_time_seconds!==expectedTime||e.distance_meters!==null||e.is_estimated!==true)errors.push(`Estimativa inválida: ${key}`);if(required!==null&&e.is_accessible!==required)errors.push(`Acessibilidade inválida: ${key}`); } if(!Number.isFinite(e.walk_time_seconds)||e.walk_time_seconds<0) errors.push(`Peso inválido: ${key}`); } g.nodes.filter(n=>!linked.has(n.code)).forEach(n=>errors.push(`Nó isolado: ${n.code}`)); return errors; }
 function dijkstra(accessible) { const from=$("#routeFrom").value,to=$("#routeTo").value, dist=Object.fromEntries(graph.nodes.map(n=>[n.code,Infinity])), prev={}; dist[from]=0; const done=new Set(); while(true){const cur=Object.keys(dist).filter(k=>!done.has(k)).sort((a,b)=>dist[a]-dist[b])[0];if(!cur||dist[cur]===Infinity)break;if(cur===to)break;done.add(cur);for(const e of graph.edges){for(const [a,b] of e.is_bidirectional?[[e.from_code,e.to_code],[e.to_code,e.from_code]]:[[e.from_code,e.to_code]]){const na=graph.nodes.find(n=>n.code===a),nb=graph.nodes.find(n=>n.code===b);if(a!==cur|| (accessible && (!e.is_accessible||!na?.is_accessible||!nb?.is_accessible||na?.is_restricted||nb?.is_restricted||e.edge_type==="stairs")))continue;const next=dist[cur]+e.walk_time_seconds;if(next<dist[b]){dist[b]=next;prev[b]=cur;}}}} if(dist[to]===Infinity)return "Sem rota disponível."; const path=[];for(let x=to;x;x=prev[x])path.unshift(x);return `${path.join(" → ")}\n${dist[to]} segundos`; }
 $("#toggleConnect").onclick=()=>{connectMode=!connectMode;connectOriginCode=null;connectionMessage=connectMode?"Selecione o nó de origem.":"";selectedNode=selectedEdge=null;render();};
-$("#nodeForm").onsubmit=e=>{e.preventDefault();if(!selectedNode)return;const f=e.currentTarget,n={...selectedNode};["code","name","type","floor","zone","connector_group"].forEach(k=>n[k]=f.elements[k].value.trim()||null);["is_accessible","is_restricted"].forEach(k=>n[k]=checked(f,k));if(!n.code||!n.name||graph.nodes.some(x=>x.code===n.code&&x.id!==n.id)){alert("Código e nome são obrigatórios; o código deve ser único.");return;}const i=graph.nodes.findIndex(x=>x.id===n.id);if(i<0)graph.nodes.push(n);else graph.nodes[i]=n;selectedNode=n;save();};
-$("#deleteNode").onclick=()=>{if(!selectedNode)return;graph.nodes=graph.nodes.filter(n=>n.id!==selectedNode.id);graph.edges=graph.edges.filter(e=>e.from_code!==selectedNode.code&&e.to_code!==selectedNode.code);selectedNode=null;save();};
+$("#nodeForm").onsubmit=e=>{e.preventDefault();if(!selectedNode)return;const f=e.currentTarget,n={...selectedNode};["code","name","type","floor","zone","connector_group"].forEach(k=>n[k]=f.elements[k].value.trim()||null);["is_accessible","is_restricted"].forEach(k=>n[k]=checked(f,k));if(!n.code||!n.name||graph.nodes.some(x=>x.code===n.code&&x.id!==n.id)){alert("Código e nome são obrigatórios; o código deve ser único.");return;}const i=graph.nodes.findIndex(x=>x.id===n.id);if(i<0)graph.nodes.push(n);else{graph=SkyGateGraphState.renameNodeCode(graph,n.id,n.code).graph;graph.nodes[i]=n;}selectedNode=n;save();};
+$("#deleteNode").onclick=()=>{if(!selectedNode)return;graph=SkyGateGraphState.removeNodeAndIncidentEdges(graph,selectedNode.id).graph;selectedNode=null;selectedEdge=null;save();};
 $("#edgeForm").elements.from_code.onchange=updateEdgeMetrics;
 $("#edgeForm").elements.to_code.onchange=updateEdgeMetrics;
 $("#edgeForm").elements.edge_type.onchange=updateEdgeMetrics;
@@ -129,6 +148,7 @@ $("#edgeForm").onsubmit=e=>{e.preventDefault();const f=e.currentTarget,from=grap
 $("#deleteEdge").onclick=()=>{if(selectedEdge==null)return;graph.edges.splice(selectedEdge,1);selectedEdge=null;fillEdge();save();};
 $("#normalRoute").onclick=()=>$("#routeResult").textContent=dijkstra(false); $("#accessibleRoute").onclick=()=>$("#routeResult").textContent=dijkstra(true);
 $("#validate").onclick=()=>{const e=validate();$("#validation").textContent=e.length?e.join("\n"):"Grafo válido.";};
+$("#removeOrphanEdges").onclick=()=>{const count=SkyGateGraphState.findOrphanEdges(graph).length;if(!count){alert("Nenhuma aresta órfã encontrada.");return;}if(!confirm(`${count} ${count===1?"aresta órfã será removida":"arestas órfãs serão removidas"}. Continuar?`))return;SkyGateGraphState.backupStoredGraph(localStorage,STORAGE,ORPHAN_CLEANUP_BACKUP,graph);graph=SkyGateGraphState.removeOrphanEdges(graph).graph;selectedEdge=null;save();alert(`${count} ${count===1?"aresta órfã removida":"arestas órfãs removidas"}.`);};
 $("#secondsPerUnit").onchange=e=>{const factor=Number(e.target.value);if(!Number.isFinite(factor)||factor<=0){alert("Informe um fator maior que zero.");e.target.value=graph.estimated_seconds_per_viewbox_unit;return;}graph.estimated_seconds_per_viewbox_unit=factor;save();};
 $("#export").onclick=()=>{graph=normalizeGraph(graph);const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(graph,null,2)],{type:"application/json"}));a.download="graph_v1.json";a.click();URL.revokeObjectURL(a.href);};
 $("#import").onchange=async e=>{try{const g=JSON.parse(await e.target.files[0].text());if(!g.airport||!Array.isArray(g.nodes)||!Array.isArray(g.edges)||!Array.isArray(g.businesses))throw Error("Formato inválido");graph=normalizeGraph(g);selectedNode=selectedEdge=null;save();}catch(err){alert(`Importação falhou: ${err.message}`)}};
