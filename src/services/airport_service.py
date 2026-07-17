@@ -18,6 +18,9 @@ class AirportService:
         self.graph_repository = graph_repository
         self.business_repository = business_repository
 
+    def list_airports(self):
+        return self.airport_repository.list_all()
+
     def get_airport(self, slug: str):
         airport = self.airport_repository.get_by_slug(slug)
         if airport is None:

@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
 from src.schemas.airport_schema import AirportResponse
 
@@ -25,6 +25,19 @@ class EdgeResponse(BaseModel):
     distance_meters: float | None = None
     instruction: str | None = None
     is_accessible: bool
+    edge_type: str | None = None
+    is_bidirectional: bool | None = None
+    is_estimated: bool | None = None
+
+    @computed_field
+    @property
+    def accessible(self) -> bool:
+        return self.is_accessible
+
+    @computed_field
+    @property
+    def weight_seconds(self) -> float:
+        return round(float(self.walk_time_minutes) * 60, 2)
 
     model_config = ConfigDict(from_attributes=True)
 

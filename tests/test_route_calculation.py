@@ -114,3 +114,42 @@ def test_route_service_calculates_and_saves_route():
     assert [service["name"] for service in response["services_on_path"]] == ["Café Central"]
     assert session_repository.saved_data["estimated_time_minutes"] == 5
 
+
+
+def test_route_service_skips_session_when_persist_session_is_false():
+    airport_id = uuid4()
+    origin_id = uuid4()
+    destination_id = uuid4()
+    airport = SimpleNamespace(id=airport_id, slug="fortaleza", name="Aeroporto de Fortaleza")
+    nodes = [
+        SimpleNamespace(id=origin_id, code="entrada", name="Entrada", type="entrance", x=0, y=0),
+        SimpleNamespace(id=destination_id, code="portao", name="Portao", type="gate", x=1, y=1),
+    ]
+    edges = [
+        SimpleNamespace(
+            from_node_id=origin_id,
+            to_node_id=destination_id,
+            walk_time_minutes=Decimal("2"),
+            instruction="Siga ate o portao.",
+        ),
+    ]
+    session_repository = FakeRouteSessionRepository()
+    service = RouteService(
+        FakeAirportRepository(airport),
+        FakeGraphRepository(nodes, edges),
+        FakeBusinessRepository([]),
+        session_repository,
+    )
+
+    response = service.calculate(
+        RouteRequest(
+            airport_slug="fortaleza",
+            journey_type="boarding",
+            origin_code="entrada",
+            destination_code="portao",
+            persist_session=False,
+        )
+    )
+
+    assert response["estimated_time_minutes"] == 2
+    assert session_repository.saved_data is None

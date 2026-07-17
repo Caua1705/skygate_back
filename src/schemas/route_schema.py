@@ -29,6 +29,7 @@ class RouteRequest(BaseModel):
     boarding_time: datetime | None = None
     route_mode: str = RouteMode.FASTEST
     preferences: RoutePreferences | None = None
+    persist_session: bool = True
 
     @field_validator("journey_type")
     @classmethod

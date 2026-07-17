@@ -5,7 +5,7 @@ from src.api.dependencies.database import get_database
 from src.repositories.airport_repository import AirportRepository
 from src.repositories.business_repository import BusinessRepository
 from src.repositories.graph_repository import GraphRepository
-from src.schemas.airport_schema import AirportResponse
+from src.schemas.airport_schema import AirportListItem, AirportResponse
 from src.schemas.graph_schema import AirportMapResponse
 from src.services.airport_service import AirportNotFoundError, AirportService
 
@@ -19,6 +19,11 @@ def get_airport_service(session: Session) -> AirportService:
         GraphRepository(session),
         BusinessRepository(session),
     )
+
+
+@router.get("", response_model=list[AirportListItem])
+def list_airports(session: Session = Depends(get_database)):
+    return get_airport_service(session).list_airports()
 
 
 @router.get("/{slug}", response_model=AirportResponse)

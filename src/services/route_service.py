@@ -101,27 +101,28 @@ class RouteService:
         )
         selected_business_payload = self._build_selected_business_payload(selected_recommendation)
 
-        self.route_session_repository.create(
-            airport_id=airport.id,
-            origin_node_id=origin.id,
-            destination_node_id=destination.id,
-            journey_type=request.journey_type,
-            boarding_time=request.boarding_time,
-            estimated_time_minutes=chosen_route.walk_time_minutes,
-            free_time_minutes=free_time,
-            path=path_payload,
-            services_on_path=services_payload,
-            route_mode=request.route_mode,
-            preferences=request.preferences.model_dump(mode="json"),
-            selected_business_id=selected_recommendation.business.id if selected_recommendation else None,
-            direct_estimated_time_minutes=direct_route.walk_time_minutes,
-            stop_time_minutes=stop_time,
-            total_estimated_time_minutes=total_time,
-            detour_minutes=detour,
-            stop_feasible=stop_feasible,
-            floor_segments=floor_segments,
-            warnings=warnings,
-        )
+        if request.persist_session:
+            self.route_session_repository.create(
+                airport_id=airport.id,
+                origin_node_id=origin.id,
+                destination_node_id=destination.id,
+                journey_type=request.journey_type,
+                boarding_time=request.boarding_time,
+                estimated_time_minutes=chosen_route.walk_time_minutes,
+                free_time_minutes=free_time,
+                path=path_payload,
+                services_on_path=services_payload,
+                route_mode=request.route_mode,
+                preferences=request.preferences.model_dump(mode="json"),
+                selected_business_id=selected_recommendation.business.id if selected_recommendation else None,
+                direct_estimated_time_minutes=direct_route.walk_time_minutes,
+                stop_time_minutes=stop_time,
+                total_estimated_time_minutes=total_time,
+                detour_minutes=detour,
+                stop_feasible=stop_feasible,
+                floor_segments=floor_segments,
+                warnings=warnings,
+            )
 
         return {
             "airport": {"slug": airport.slug, "name": airport.name},

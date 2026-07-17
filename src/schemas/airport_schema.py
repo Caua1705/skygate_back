@@ -13,6 +13,10 @@ class AirportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AirportListItem(AirportResponse):
+    is_active: bool | None = None
+
+
 class AirportSummary(BaseModel):
     slug: str
     name: str
