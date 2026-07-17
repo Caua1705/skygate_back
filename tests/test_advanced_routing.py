@@ -282,3 +282,142 @@ def test_route_service_specific_business_persists_metadata_and_warns_when_stop_i
     assert response["warnings"][0]["code"] == "insufficient_time_for_stop"
     assert sessions.data["selected_business_id"] == business.id
     assert sessions.data["floor_segments"]
+
+
+
+def test_accessible_floor_route_uses_elevator_and_avoids_stairs_or_escalators():
+    origin = make_node("entrada", floor="0")
+    elevator_p0 = make_node("elevador_p0", floor="0", type="elevator", connector_group="elevador_a")
+    elevator_p1 = make_node("elevador_p1", floor="1", type="elevator", connector_group="elevador_a")
+    stairs_p0 = make_node("escada_p0", floor="0", type="stairs", is_accessible=False, connector_group="escada_a")
+    stairs_p1 = make_node("escada_p1", floor="1", type="stairs", is_accessible=False, connector_group="escada_a")
+    escalator_p0 = make_node("rolante_p0", floor="0", type="escalator", is_accessible=False, connector_group="rolante_a")
+    escalator_p1 = make_node("rolante_p1", floor="1", type="escalator", is_accessible=False, connector_group="rolante_a")
+    destination = make_node("destino", floor="1")
+    edges = [
+        make_edge(origin, elevator_p0, 1),
+        make_edge(elevator_p0, elevator_p1, 1, edge_type=EdgeType.ELEVATOR, is_accessible=True, is_bidirectional=True),
+        make_edge(elevator_p1, destination, 1),
+        make_edge(origin, stairs_p0, 1, is_accessible=False),
+        make_edge(stairs_p0, stairs_p1, 1, edge_type=EdgeType.STAIRS, is_accessible=False, is_bidirectional=True),
+        make_edge(stairs_p1, destination, 1, is_accessible=False),
+        make_edge(origin, escalator_p0, 1, is_accessible=False),
+        make_edge(escalator_p0, escalator_p1, 1, edge_type=EdgeType.ESCALATOR, is_accessible=False, is_bidirectional=True),
+        make_edge(escalator_p1, destination, 1, is_accessible=False),
+    ]
+    filtered = build_filtered_graph(
+        [origin, elevator_p0, elevator_p1, stairs_p0, stairs_p1, escalator_p0, escalator_p1, destination],
+        edges,
+        route_mode=RouteMode.ACCESSIBLE,
+        accessible=True,
+    )
+
+    result = DijkstraService().calculate(filtered.graph, str(origin.id), str(destination.id))
+    path_codes = [filtered.nodes_by_id[node_id].code for node_id in result["path"]]
+
+    assert path_codes == ["entrada", "elevador_p0", "elevador_p1", "destino"]
+    assert "escada_p0" not in path_codes
+    assert "rolante_p0" not in path_codes
+
+
+def build_fortaleza_filtered_graph(accessible=False):
+    import importlib.util
+    import json
+    import sys
+    from pathlib import Path
+    from uuid import NAMESPACE_URL, uuid5
+
+    spec = importlib.util.spec_from_file_location("import_airport_graph_routes", Path("scripts/import_airport_graph.py"))
+    importer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = importer
+    assert spec.loader is not None
+    spec.loader.exec_module(importer)
+
+    data = json.loads(Path("data/airports/fortaleza/graph_v2.json").read_text(encoding="utf-8"))
+    importer.validate_graph(data)
+    node_ids = {row["code"]: uuid5(NAMESPACE_URL, row["code"]) for row in data["nodes"]}
+    nodes = [
+        SimpleNamespace(
+            id=node_ids[row["code"]],
+            code=row["code"],
+            name=row["name"],
+            type=row["type"],
+            floor=str(row["floor"]),
+            x=Decimal(str(row["x"])),
+            y=Decimal(str(row["y"])),
+            is_accessible=bool(row.get("is_accessible", True)),
+            is_restricted=bool(row.get("is_restricted", False)),
+            connector_group=row.get("connector_group"),
+        )
+        for row in data["nodes"]
+    ]
+    edges = [
+        SimpleNamespace(
+            id=uuid5(NAMESPACE_URL, f"{row['from_code']}->{row['to_code']}"),
+            from_node_id=node_ids[row["from_code"]],
+            to_node_id=node_ids[row["to_code"]],
+            walk_time_minutes=Decimal(str(row["walk_time_seconds"])) / Decimal(60),
+            instruction=row.get("instruction"),
+            is_accessible=bool(row.get("is_accessible", True)),
+            is_bidirectional=bool(row.get("is_bidirectional", False)),
+            edge_type=row.get("edge_type", EdgeType.CORRIDOR),
+        )
+        for row in [*data["edges"], *importer.build_vertical_connector_edges(data)]
+    ]
+    filtered = build_filtered_graph(
+        nodes,
+        edges,
+        route_mode=RouteMode.ACCESSIBLE if accessible else RouteMode.FASTEST,
+        accessible=accessible,
+    )
+    return filtered, {node.code: node for node in nodes}
+
+
+@pytest.mark.parametrize(
+    ("origin_code", "destination_code"),
+    [
+        ("p0_porta_2", "p2_portao_18"),
+        ("p0_corredor_acesso_terminal", "p1_corredor_acesso_externo"),
+        ("p1_elevador_b", "p3_elevador_b"),
+        ("p2_portao_1", "p2_portao_28"),
+        ("p2_pague_menos", "p2_wc_pier_leste"),
+    ],
+)
+def test_fortaleza_graph_scenarios_are_routable_after_vertical_generation(origin_code, destination_code):
+    filtered, nodes_by_code = build_fortaleza_filtered_graph()
+
+    result = DijkstraService().calculate(
+        filtered.graph,
+        str(nodes_by_code[origin_code].id),
+        str(nodes_by_code[destination_code].id),
+    )
+    path_codes = [filtered.nodes_by_id[node_id].code for node_id in result["path"]]
+
+    assert path_codes[0] == origin_code
+    assert path_codes[-1] == destination_code
+
+
+@pytest.mark.parametrize(
+    ("origin_code", "destination_code"),
+    [
+        ("p0_porta_2", "p2_portao_18"),
+        ("p0_corredor_acesso_terminal", "p1_corredor_acesso_externo"),
+        ("p1_elevador_b", "p3_elevador_b"),
+    ],
+)
+def test_fortaleza_accessible_vertical_routes_use_elevators(origin_code, destination_code):
+    filtered, nodes_by_code = build_fortaleza_filtered_graph(accessible=True)
+
+    result = DijkstraService().calculate(
+        filtered.graph,
+        str(nodes_by_code[origin_code].id),
+        str(nodes_by_code[destination_code].id),
+    )
+    edge_types = [
+        filtered.edges_by_pair[(source_id, target_id)].edge.edge_type
+        for source_id, target_id in zip(result["path"], result["path"][1:])
+    ]
+
+    assert EdgeType.ELEVATOR in edge_types
+    assert EdgeType.STAIRS not in edge_types
+    assert EdgeType.ESCALATOR not in edge_types

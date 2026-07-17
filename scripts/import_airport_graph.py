@@ -13,13 +13,14 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from src.db.session import SessionLocal
 from src.models.airport_business_model import AirportBusiness
 from src.models.airport_edge_model import AirportEdge
 from src.models.airport_node_model import AirportNode
+from src.models.route_session_model import RouteSession
 from src.repositories.airport_repository import AirportRepository
 
 ZONES = {"public", "checkin", "security", "domestic_airside", "international_airside", "connection", "baggage_claim", "restricted"}
@@ -27,6 +28,16 @@ EDGE_TYPES = {"corridor", "ramp", "stairs", "escalator", "elevator", "security",
 CONNECTOR_TYPES = {"elevator", "stairs", "escalator"}
 INACCESSIBLE_CONNECTOR_TYPES = {"stairs", "escalator"}
 TWO_DECIMAL_PLACES = Decimal("0.01")
+VERTICAL_CONNECTOR_COST_SECONDS = {
+    "elevator": Decimal("45"),
+    "stairs": Decimal("35"),
+    "escalator": Decimal("30"),
+}
+VERTICAL_CONNECTOR_INSTRUCTIONS = {
+    "elevator": "Use o elevador para mudar de piso",
+    "stairs": "Use a escada para mudar de piso",
+    "escalator": "Use a escada rolante para mudar de piso",
+}
 
 
 class GraphValidationError(ValueError):
@@ -38,10 +49,16 @@ class Counts:
     inserted: Counter = field(default_factory=Counter)
     updated: Counter = field(default_factory=Counter)
     ignored: Counter = field(default_factory=Counter)
+    deleted: Counter = field(default_factory=Counter)
+    generated: Counter = field(default_factory=Counter)
 
     def show(self) -> str:
-        labels = ("nodes", "edges", "businesses")
-        return "\n".join(f"{label}: inserir={self.inserted[label]}, atualizar={self.updated[label]}, ignorar={self.ignored[label]}" for label in labels)
+        labels = ("route_sessions", "nodes", "edges", "businesses")
+        return "\n".join(
+            f"{label}: apagar={self.deleted[label]}, inserir={self.inserted[label]}, atualizar={self.updated[label]}, "
+            f"ignorar={self.ignored[label]}, gerar={self.generated[label]}"
+            for label in labels
+        )
 
 
 def decimal(value: Any, label: str, *, required: bool = False) -> Decimal | None:
@@ -119,7 +136,7 @@ def validate_graph(data: Any) -> dict[str, Any]:
             raise GraphValidationError(f"aresta {pair}.distance_meters deve ser null")
         walk_time = decimal(edge.get("walk_time_seconds"), f"aresta {pair}.walk_time_seconds", required=True)
         expected_walk_time = rounded(viewbox_distance * factor)
-        if walk_time != expected_walk_time:
+        if abs(walk_time - expected_walk_time) > TWO_DECIMAL_PLACES:
             raise GraphValidationError(f"aresta {pair}: walk_time_seconds deve ser {expected_walk_time}")
         if edge.get("is_estimated") is not True:
             raise GraphValidationError(f"aresta {pair}.is_estimated deve permanecer true")
@@ -134,6 +151,61 @@ def validate_graph(data: Any) -> dict[str, Any]:
     return data
 
 
+def _floor_number(node: dict[str, Any]) -> int | None:
+    try:
+        return int(str(node.get("floor")))
+    except (TypeError, ValueError):
+        return None
+
+
+def build_vertical_connector_edges(data: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes_by_group_and_type: dict[tuple[str, str], dict[int, list[dict[str, Any]]]] = {}
+    existing_pairs = {
+        (edge["from_code"], edge["to_code"])
+        for edge in data["edges"]
+        if isinstance(edge.get("from_code"), str) and isinstance(edge.get("to_code"), str)
+    }
+    existing_pairs |= {(target, source) for source, target in existing_pairs}
+
+    for node in data["nodes"]:
+        connector_group = (node.get("connector_group") or "").strip()
+        node_type = node.get("type")
+        floor = _floor_number(node)
+        if not connector_group or node_type not in CONNECTOR_TYPES or floor is None:
+            continue
+        nodes_by_group_and_type.setdefault((connector_group, node_type), {}).setdefault(floor, []).append(node)
+
+    generated: list[dict[str, Any]] = []
+    generated_pairs: set[tuple[str, str]] = set()
+    for (_connector_group, node_type), nodes_by_floor in sorted(nodes_by_group_and_type.items()):
+        floors = sorted(nodes_by_floor)
+        for lower_floor, upper_floor in zip(floors, floors[1:]):
+            if upper_floor - lower_floor != 1:
+                continue
+            for source in sorted(nodes_by_floor[lower_floor], key=lambda item: item["code"]):
+                for target in sorted(nodes_by_floor[upper_floor], key=lambda item: item["code"]):
+                    pair = (source["code"], target["code"])
+                    reverse_pair = (target["code"], source["code"])
+                    if source["code"] == target["code"] or pair in existing_pairs or pair in generated_pairs or reverse_pair in generated_pairs:
+                        continue
+                    generated_pairs.add(pair)
+                    generated.append(
+                        {
+                            "from_code": source["code"],
+                            "to_code": target["code"],
+                            "edge_type": node_type,
+                            "viewbox_distance": 0,
+                            "distance_meters": None,
+                            "walk_time_seconds": VERTICAL_CONNECTOR_COST_SECONDS[node_type],
+                            "instruction": VERTICAL_CONNECTOR_INSTRUCTIONS[node_type],
+                            "is_bidirectional": True,
+                            "is_accessible": node_type == "elevator",
+                            "is_estimated": True,
+                        }
+                    )
+    return generated
+
+
 def _apply(model: Any, values: dict[str, Any]) -> bool:
     """Apply only changed attributes and report whether this is an update."""
     changed = False
@@ -144,10 +216,40 @@ def _apply(model: Any, values: dict[str, Any]) -> bool:
     return changed
 
 
-def import_graph(session: Session, data: dict[str, Any], *, dry_run: bool = False) -> Counts:
+def _delete_airport_graph(session: Session, airport_id: Any, counts: Counts) -> None:
+    airport_node_ids = select(AirportNode.id).where(AirportNode.airport_id == airport_id)
+    airport_business_ids = select(AirportBusiness.id).where(AirportBusiness.airport_id == airport_id)
+    operations = (
+        (
+            "route_sessions",
+            delete(RouteSession).where(
+                or_(
+                    RouteSession.airport_id == airport_id,
+                    RouteSession.origin_node_id.in_(airport_node_ids),
+                    RouteSession.destination_node_id.in_(airport_node_ids),
+                    RouteSession.selected_business_id.in_(airport_business_ids),
+                )
+            ),
+        ),
+        ("businesses", delete(AirportBusiness).where(AirportBusiness.airport_id == airport_id)),
+        ("edges", delete(AirportEdge).where(AirportEdge.airport_id == airport_id)),
+        ("nodes", delete(AirportNode).where(AirportNode.airport_id == airport_id)),
+    )
+    for label, statement in operations:
+        result = session.execute(statement.execution_options(synchronize_session=False))
+        counts.deleted[label] += result.rowcount or 0
+
+
+def import_graph(session: Session, data: dict[str, Any], *, dry_run: bool = False, replace: bool = False) -> Counts:
     data = validate_graph(data); airport = AirportRepository(session).get_by_slug(data["airport"]["slug"])
-    if airport is None: raise GraphValidationError(f"Aeroporto não encontrado: {data['airport']['slug']}")
-    counts = Counts(); existing_nodes = {node.code: node for node in session.scalars(select(AirportNode).where(AirportNode.airport_id == airport.id))}
+    if airport is None: raise GraphValidationError(f"Aeroporto nao encontrado: {data['airport']['slug']}")
+    counts = Counts()
+    if replace:
+        _delete_airport_graph(session, airport.id, counts)
+        session.flush()
+    vertical_edges = build_vertical_connector_edges(data)
+    counts.generated["edges"] = len(vertical_edges)
+    existing_nodes = {node.code: node for node in session.scalars(select(AirportNode).where(AirportNode.airport_id == airport.id))}
     node_by_code: dict[str, AirportNode] = {}
     for row in data["nodes"]:
         values = {"name":row["name"].strip(),"type":row["type"].strip(),"floor":str(row["floor"]),"x":decimal(row["x"],"x",required=True),"y":decimal(row["y"],"y",required=True),"zone":row.get("zone","public"),"connector_group":row.get("connector_group") or None,"is_accessible":bool(row.get("is_accessible",True)),"is_restricted":bool(row.get("is_restricted",False)),"is_estimated":bool(row.get("is_estimated",False))}
@@ -158,8 +260,8 @@ def import_graph(session: Session, data: dict[str, Any], *, dry_run: bool = Fals
         node_by_code[row["code"]] = node
     session.flush()
     existing_edges = {(str(e.from_node_id),str(e.to_node_id)):e for e in session.scalars(select(AirportEdge).where(AirportEdge.airport_id == airport.id))}
-    for row in data["edges"]:
-        source,target=node_by_code[row["from_code"]],node_by_code[row["to_code"]]; values={"walk_time_minutes":decimal(row["walk_time_seconds"],"seconds",required=True)/Decimal(60),"distance_meters":decimal(row.get("distance_meters"),"distance"),"instruction":row.get("instruction") or None,"edge_type":row.get("edge_type","corridor"),"is_bidirectional":bool(row.get("is_bidirectional",False)),"is_accessible":bool(row.get("is_accessible",True)),"is_estimated":bool(row.get("is_estimated",False))}; key=(str(source.id),str(target.id)); edge=existing_edges.get(key)
+    for row in [*data["edges"], *vertical_edges]:
+        source,target=node_by_code[row["from_code"]],node_by_code[row["to_code"]]; values={"walk_time_minutes":decimal(row["walk_time_seconds"],"seconds",required=True)/Decimal(60),"distance_meters":decimal(row.get("distance_meters"),"distance"),"instruction":row.get("instruction") or None,"edge_type":row.get("edge_type","corridor"),"is_bidirectional":bool(row.get("is_bidirectional",False)),"is_accessible":bool(row.get("is_accessible",True)),"is_estimated":bool(row.get("is_estimated",False))}; key=(str(source.id),str(target.id)); reverse_key=(str(target.id),str(source.id)); edge=existing_edges.get(key) or (existing_edges.get(reverse_key) if values["is_bidirectional"] else None)
         if edge is None: session.add(AirportEdge(airport_id=airport.id,from_node_id=source.id,to_node_id=target.id,**values)); counts.inserted["edges"] += 1
         elif _apply(edge,values): counts.updated["edges"] += 1
         else: counts.ignored["edges"] += 1
@@ -180,11 +282,11 @@ def import_graph(session: Session, data: dict[str, Any], *, dry_run: bool = Fals
 
 
 def main() -> int:
-    parser=argparse.ArgumentParser(); parser.add_argument("json_path",type=Path); parser.add_argument("--dry-run",action="store_true"); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument("json_path",type=Path); parser.add_argument("--dry-run",action="store_true"); parser.add_argument("--replace",action="store_true"); args=parser.parse_args()
     try:
         data=json.loads(args.json_path.read_text(encoding="utf-8")); validate_graph(data)
         with SessionLocal() as session:
-            with session.begin(): counts=import_graph(session,data,dry_run=args.dry_run)
+            with session.begin(): counts=import_graph(session,data,dry_run=args.dry_run,replace=args.replace)
         print(("Simulação concluída.\n" if args.dry_run else "Importação concluída.\n") + counts.show()); return 0
     except (OSError,json.JSONDecodeError,GraphValidationError) as exc: print(f"Erro: {exc}",file=sys.stderr); return 2
     except Exception as exc: print(f"Erro: transação revertida: {exc}",file=sys.stderr); return 1

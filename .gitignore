@@ -8,3 +8,4 @@ htmlcov/
 .idea/
 .vscode/
 
+*.backup_*
