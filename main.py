@@ -12,11 +12,30 @@ from src.core.config import get_settings
 
 settings = get_settings()
 logger = logging.getLogger("skygate.database")
+
 app = FastAPI(title="SkyGate API", version="0.1.0")
+
+# Origens permitidas para o frontend acessar a API.
+# O erro atual vem de: http://127.0.0.1:5501
+DEFAULT_CORS_ORIGINS = [
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "http://127.0.0.1:5501",
+    "http://localhost:5501",
+]
+
+cors_origins = list(
+    dict.fromkeys(
+        [
+            *getattr(settings, "cors_origins_list", []),
+            *DEFAULT_CORS_ORIGINS,
+        ]
+    )
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
