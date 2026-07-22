@@ -46,6 +46,43 @@ Copie `.env.example` para `.env` e ajuste:
 - `SUPABASE_SERVICE_ROLE_KEY`: chave de serviço do Supabase, sem expô-la no repositório;
 - `APP_ENV`: ambiente, por exemplo `development` ou `production`;
 - `CORS_ORIGINS`: origens permitidas separadas por vírgula.
+- `CORS_ORIGIN_REGEX`: expressão regular para deployments de preview da Vercel.
+
+Em produção, defina `APP_ENV=production` e informe em `CORS_ORIGINS` a URL
+canônica exata do frontend na Vercel. Origens locais só são adicionadas quando
+`APP_ENV` é `development`, `dev` ou `local`.
+
+## Deploy em produção com Traefik
+
+O domínio público do backend é `https://api.skygate.com.br`. O serviço entra na
+rede Docker externa `n8n_default`, usada pelo Traefik, e não publica a porta 8000
+no host na configuração final. O certresolver esperado no Traefik é
+`mytlschallenge`.
+
+Antes do deploy, aponte somente o registro DNS `A` de `api.skygate.com.br` para
+`212.85.0.237`. O domínio do frontend permanece na Vercel.
+
+No primeiro deploy, use o override temporário para manter a porta legada 8003
+até o HTTPS ser validado:
+
+```bash
+cp .env ".env.backup_$(date +%Y%m%d-%H%M%S)"
+# Edite .env: use APP_ENV=production e a URL canonica real em CORS_ORIGINS.
+docker network inspect n8n_default
+docker compose -f docker-compose.yml -f docker-compose.bootstrap.yml config
+docker compose -f docker-compose.yml -f docker-compose.bootstrap.yml up -d --build
+curl -fsS https://api.skygate.com.br/health
+```
+
+Depois que o último comando confirmar o HTTPS, remova a publicação
+`0.0.0.0:8003->8000` recriando o serviço apenas com a configuração final:
+
+```bash
+docker compose up -d --build --force-recreate
+docker compose ps
+curl -fsS https://api.skygate.com.br/health
+curl -fsS http://127.0.0.1:8003/health && echo "ERRO: porta 8003 ainda publicada" || echo "OK: porta 8003 fechada"
+```
 
 ## Migrations no Supabase
 

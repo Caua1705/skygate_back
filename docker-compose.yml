@@ -5,5 +5,19 @@ services:
     restart: always
     env_file:
       - .env
-    ports:
-      - "8003:8000"
+    expose:
+      - "8000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=n8n_default"
+      - "traefik.http.routers.skygate-api.rule=Host(`api.skygate.com.br`)"
+      - "traefik.http.routers.skygate-api.entrypoints=websecure"
+      - "traefik.http.routers.skygate-api.tls=true"
+      - "traefik.http.routers.skygate-api.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.skygate-api.loadbalancer.server.port=8000"
+    networks:
+      - n8n_default
+
+networks:
+  n8n_default:
+    external: true

@@ -1,0 +1,6 @@
+# Use somente no primeiro deploy, enquanto o HTTPS via Traefik e validado.
+# Depois da validacao, suba apenas docker-compose.yml para remover a porta publica.
+services:
+  skygate-api:
+    ports:
+      - "8003:8000"
