@@ -29,7 +29,11 @@ class Settings(BaseSettings):
 
     @property
     def allowed_cors_origins(self) -> list[str]:
-        origins = list(self.cors_origins_list)
+        origins = [
+            "https://gatesky.com.br",
+            "https://www.gatesky.com.br",
+            *self.cors_origins_list,
+        ]
         if self.app_env.lower() in {"development", "dev", "local"}:
             origins.extend(
                 [
